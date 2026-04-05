@@ -9,7 +9,6 @@ warnings.filterwarnings('ignore')
 class PerformanceMatrixAgent:
     """
     ИИ-агент для анализа эффективности сотрудников
-    Использует линейную регрессию для прогнозирования
     """
     
     def __init__(self):
@@ -24,22 +23,31 @@ class PerformanceMatrixAgent:
             }
         }
         
+        # Статусы лидов с категориями
         self.statuses = {
-            'new': ['новый лид', 'новый', 'new', 'новое'],
-            'transferred': ['передан менеджеру', 'передан', 'передано', 'передана'],
-            'failed_call': ['недозвон', 'нет ответа', 'не берут трубку', 'no answer'],
-            'recall': ['перезвон', 'перезвонить', 'call back'],
+            'new': ['новый лид', 'новый', 'new', 'новое', 'поступил'],
+            'transferred': ['передан менеджеру', 'передан', 'передано', 'передана', 'передал'],
+            'failed_call': ['недозвон', 'нет ответа', 'не берут трубку', 'no answer', 'не дозвонился'],
+            'recall': ['перезвон', 'перезвонить', 'call back', 'перезвонил'],
             'test': ['тест', 'test'],
             'duplicate': ['дубль', 'дубликат', 'duplicate', 'повтор', 'повторно'],
             'wrong_number': ['ошибка номера', 'неверный номер', 'wrong number'],
-            'refused': ['отказ', 'отказался', 'не заинтересован', 'refused'],
+            'refused': ['отказ', 'отказался', 'не заинтересован', 'refused', 'отказано'],
             'in_work': []
         }
         
-        self.poor_quality_statuses = ['failed_call', 'duplicate', 'wrong_number', 'refused', 'recall']
+        self.poor_quality_statuses = ['failed_call', 'duplicate', 'wrong_number', 'refused']
+    
+    def detect_data_type(self, df: pd.DataFrame) -> str:
+        status_cols = ['этап', 'status', 'статус']
+        if any(col in df.columns.str.lower() for col in status_cols):
+            return 'raw'
+        date_cols = ['дата', 'date', 'дата создания', 'created_at']
+        if any(col in df.columns.str.lower() for col in date_cols):
+            return 'raw'
+        return 'aggregated'
     
     def detect_columns(self, df: pd.DataFrame) -> Dict[str, str]:
-        """Определяет нужные колонки в DataFrame"""
         columns_map = {
             'маркетолог': None,
             'ответственный': None,
@@ -72,105 +80,6 @@ class PerformanceMatrixAgent:
         
         return columns_map
     
-    def is_aggregated_data(self, df: pd.DataFrame) -> bool:
-        """Определяет, являются ли данные агрегированными"""
-        if len(df) < 100:
-            numeric_cols = df.select_dtypes(include=[np.number]).columns
-            for col in numeric_cols:
-                if any(word in col.lower() for word in ['%', 'средн', 'конверси', 'процент']):
-                    return True
-            name_cols = [col for col in df.columns if any(word in col.lower() for word in ['имя', 'фио', 'сотрудник', 'маркетолог'])]
-            if name_cols and len(numeric_cols) >= 2:
-                return True
-        return False
-    
-    def analyze_aggregated_table(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
-        """Анализирует агрегированную таблицу"""
-        name_col = None
-        for col in df.columns:
-            if any(word in col.lower() for word in ['имя', 'фио', 'сотрудник', 'маркетолог', 'диспетчер']):
-                name_col = col
-                break
-        
-        if not name_col:
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {'error': 'Не найдена колонка с именами'}
-        
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        
-        leads_col = None
-        transferred_col = None
-        failed_col = None
-        rejected_col = None
-        
-        for col in numeric_cols:
-            col_lower = col.lower()
-            if 'лид' in col_lower or 'получен' in col_lower or 'всего' in col_lower:
-                leads_col = col
-            elif 'передан' in col_lower:
-                transferred_col = col
-            elif 'недозвон' in col_lower:
-                failed_col = col
-            elif 'отказ' in col_lower or 'брак' in col_lower:
-                rejected_col = col
-        
-        if not leads_col and len(numeric_cols) >= 1:
-            leads_col = numeric_cols[0]
-        if not transferred_col and len(numeric_cols) >= 2:
-            transferred_col = numeric_cols[1]
-        if not failed_col and len(numeric_cols) >= 3:
-            failed_col = numeric_cols[2]
-        if not rejected_col and len(numeric_cols) >= 4:
-            rejected_col = numeric_cols[3]
-        
-        results = []
-        
-        for _, row in df.iterrows():
-            name = str(row[name_col]).strip()
-            if not name or name == 'nan':
-                continue
-            
-            total_leads = float(row[leads_col]) if leads_col and pd.notna(row[leads_col]) else 0
-            transferred = float(row[transferred_col]) if transferred_col and pd.notna(row[transferred_col]) else 0
-            failed = float(row[failed_col]) if failed_col and pd.notna(row[failed_col]) else 0
-            rejected = float(row[rejected_col]) if rejected_col and pd.notna(row[rejected_col]) else 0
-            
-            transfer_rate = (transferred / total_leads * 100) if total_leads > 0 else 0
-            failed_rate = (failed / total_leads * 100) if total_leads > 0 else 0
-            rejected_rate = (rejected / total_leads * 100) if total_leads > 0 else 0
-            
-            if transfer_rate < self.targets['dispatcher']['transfer_rate']:
-                predicted_transfer = transfer_rate + (self.targets['dispatcher']['transfer_rate'] - transfer_rate) * 0.3
-            else:
-                predicted_transfer = transfer_rate * 0.97
-            
-            is_problem = (
-                transfer_rate < self.targets['dispatcher']['transfer_rate'] or
-                failed_rate > self.targets['dispatcher']['max_failed_calls'] or
-                rejected_rate > self.targets['dispatcher']['max_rejected']
-            )
-            
-            results.append({
-                'Сотрудник': name,
-                'Получено лидов': int(total_leads),
-                'Передано продажам': int(transferred),
-                'Недозвоны': int(failed),
-                'Отказы': int(rejected),
-                'Дубли/Повторы': 0,
-                'Ошибка номера': 0,
-                '% переданных': round(transfer_rate, 1),
-                '% недозвонов': round(failed_rate, 1),
-                '% отказов': round(rejected_rate, 1),
-                '% дублей/повторов': 0,
-                'Лидов в день': 0,
-                'Загруженность': 'Нет данных',
-                '📈 ПРОГНОЗ: % переданных': round(predicted_transfer, 1),
-                '📈 ПРОГНОЗ: передач (шт)': round(total_leads * predicted_transfer / 100, 0),
-                'is_problem': is_problem
-            })
-        
-        summary_df = pd.DataFrame(results)
-        return summary_df, pd.DataFrame(), pd.DataFrame(), {'type': 'aggregated'}
-    
     def get_dispatcher_name(self, row, columns_map):
         if columns_map['маркетолог'] and pd.notna(row[columns_map['маркетолог']]):
             val = str(row[columns_map['маркетолог']]).strip()
@@ -185,9 +94,9 @@ class PerformanceMatrixAgent:
                 return val
         return None
     
-    def get_status_category(self, status_text):
+    def get_status_category(self, status_text: str) -> str:
         if pd.isna(status_text):
-            return 'unknown'
+            return 'new'
         status_lower = str(status_text).lower().strip()
         for category, keywords in self.statuses.items():
             for keyword in keywords:
@@ -195,7 +104,7 @@ class PerformanceMatrixAgent:
                     return category
         return 'in_work'
     
-    def is_lead_transferred(self, row, columns_map):
+    def is_lead_transferred(self, row, columns_map) -> Tuple[bool, bool]:
         marketer = self.get_dispatcher_name(row, columns_map)
         responsible = self.get_responsible_name(row, columns_map)
         
@@ -243,32 +152,12 @@ class PerformanceMatrixAgent:
         if columns_map['дата_создания']:
             df[columns_map['дата_создания']] = pd.to_datetime(df[columns_map['дата_создания']], errors='coerce')
         
-        # Проблемные лиды (не сменили ответственного)
-        transferred_with_issue = []
-        
-        for _, row in df.iterrows():
-            is_transferred, has_issue = self.is_lead_transferred(row, columns_map)
-            if is_transferred and has_issue:
-                client_info = {
-                    'Дата': row[columns_map['дата_создания']] if columns_map['дата_создания'] else None,
-                    'Клиент': row[columns_map['клиент']] if columns_map['клиент'] else 'Не указан',
-                    'Телефон': row[columns_map['телефон']] if columns_map['телефон'] else 'Не указан',
-                    'Название': row[columns_map['название']] if columns_map['название'] else 'Не указан',
-                    'Лэнд': row[columns_map['ленд']] if columns_map['ленд'] else 'Не указан',
-                    'Маркетолог': self.get_dispatcher_name(row, columns_map),
-                    'Ответственный': self.get_responsible_name(row, columns_map)
-                }
-                transferred_with_issue.append(client_info)
-        
-        issues_df = pd.DataFrame(transferred_with_issue)
-        
-        # Нераспределенные лиды (пустое поле Маркетолог)
+        # Нераспределенные лиды
         unassigned_df = df[df[columns_map['маркетолог']].isna() | (df[columns_map['маркетолог']].astype(str).str.strip() == '')]
         unassigned_count = len(unassigned_df)
         total_leads_all = len(df)
         unassigned_rate = (unassigned_count / total_leads_all * 100) if total_leads_all > 0 else 0
         
-        # Детали незакрепленных лидов
         unassigned_leads = []
         for _, row in unassigned_df.iterrows():
             lead_info = {
@@ -283,7 +172,26 @@ class PerformanceMatrixAgent:
         
         unassigned_df_detailed = pd.DataFrame(unassigned_leads)
         
-        # Фильтрация по выбранным диспетчерам
+        # Проблемные лиды
+        transferred_with_issue = []
+        for _, row in df.iterrows():
+            is_transferred, has_issue = self.is_lead_transferred(row, columns_map)
+            if is_transferred and has_issue:
+                client_info = {
+                    'Дата': row[columns_map['дата_создания']] if columns_map['дата_создания'] else None,
+                    'Клиент': row[columns_map['клиент']] if columns_map['клиент'] else 'Не указан',
+                    'Телефон': row[columns_map['телефон']] if columns_map['телефон'] else 'Не указан',
+                    'Название': row[columns_map['название']] if columns_map['название'] else 'Не указан',
+                    'Лэнд': row[columns_map['ленд']] if columns_map['ленд'] else 'Не указан',
+                    'Маркетолог': self.get_dispatcher_name(row, columns_map),
+                    'Ответственный': self.get_responsible_name(row, columns_map),
+                    'Статус': row[columns_map['этап']] if columns_map['этап'] else 'Не указан'
+                }
+                transferred_with_issue.append(client_info)
+        
+        issues_df = pd.DataFrame(transferred_with_issue)
+        
+        # Фильтрация
         all_dispatchers = df[columns_map['маркетолог']].dropna().unique()
         all_dispatchers = [str(d).strip() for d in all_dispatchers if pd.notna(d) and str(d).strip()]
         
@@ -302,13 +210,17 @@ class PerformanceMatrixAgent:
             total_leads = len(dispatcher_df)
             transferred_leads = 0
             failed_calls = 0
-            rejected = 0
+            refused = 0
             duplicates = 0
             recalls = 0
             wrong_numbers = 0
+            new_leads = 0
+            in_work = 0
             
+            # ВАЖНО: объявляем список для исторических данных ДО цикла
             historical_transfer_rates = []
             
+            # Дневная динамика
             if columns_map['дата_создания']:
                 daily_groups = dispatcher_df.groupby(dispatcher_df[columns_map['дата_создания']].dt.date)
                 
@@ -316,7 +228,7 @@ class PerformanceMatrixAgent:
                     total = len(day_df)
                     transferred = 0
                     failed = 0
-                    rejected_day = 0
+                    refused_day = 0
                     
                     for _, row in day_df.iterrows():
                         if self.is_lead_transferred(row, columns_map)[0]:
@@ -326,7 +238,7 @@ class PerformanceMatrixAgent:
                         if status == 'failed_call':
                             failed += 1
                         elif status == 'refused':
-                            rejected_day += 1
+                            refused_day += 1
                     
                     rate = (transferred / total * 100) if total > 0 else 0
                     historical_transfer_rates.append(rate)
@@ -337,10 +249,11 @@ class PerformanceMatrixAgent:
                         'Получено лидов': total,
                         'Передано': transferred,
                         'Недозвоны': failed,
-                        'Отказы': rejected_day,
+                        'Отказы': refused_day,
                         '% переданных': round(rate, 1)
                     })
             
+            # Подсчет по статусам
             for _, row in dispatcher_df.iterrows():
                 is_transferred, _ = self.is_lead_transferred(row, columns_map)
                 if is_transferred:
@@ -352,19 +265,27 @@ class PerformanceMatrixAgent:
                 if status_category == 'failed_call':
                     failed_calls += 1
                 elif status_category == 'refused':
-                    rejected += 1
+                    refused += 1
                 elif status_category == 'duplicate':
                     duplicates += 1
                 elif status_category == 'recall':
                     recalls += 1
                 elif status_category == 'wrong_number':
                     wrong_numbers += 1
+                elif status_category == 'new':
+                    new_leads += 1
+                else:
+                    in_work += 1
             
+            # Расчет метрик
             transfer_rate = (transferred_leads / total_leads * 100) if total_leads > 0 else 0
             failed_rate = (failed_calls / total_leads * 100) if total_leads > 0 else 0
-            rejected_rate = (rejected / total_leads * 100) if total_leads > 0 else 0
-            duplicate_rate = ((duplicates + recalls) / total_leads * 100) if total_leads > 0 else 0
+            refused_rate = (refused / total_leads * 100) if total_leads > 0 else 0
+            duplicate_rate = (duplicates / total_leads * 100) if total_leads > 0 else 0
+            recall_rate = (recalls / total_leads * 100) if total_leads > 0 else 0
+            new_rate = (new_leads / total_leads * 100) if total_leads > 0 else 0
             
+            # Прогноз
             if len(historical_transfer_rates) >= 2:
                 predicted_transfer = self.predict_with_regression(historical_transfer_rates)
             else:
@@ -400,7 +321,7 @@ class PerformanceMatrixAgent:
             is_problem = (
                 transfer_rate < self.targets['dispatcher']['transfer_rate'] or
                 failed_rate > self.targets['dispatcher']['max_failed_calls'] or
-                rejected_rate > self.targets['dispatcher']['max_rejected'] or
+                refused_rate > self.targets['dispatcher']['max_rejected'] or
                 duplicate_rate > self.targets['dispatcher']['max_duplicate_rate']
             )
             
@@ -409,13 +330,17 @@ class PerformanceMatrixAgent:
                 'Получено лидов': total_leads,
                 'Передано продажам': transferred_leads,
                 'Недозвоны': failed_calls,
-                'Отказы': rejected,
-                'Дубли/Повторы': duplicates + recalls,
+                'Отказы': refused,
+                'Дубли': duplicates,
+                'Перезвоны': recalls,
+                'Новые (необработанные)': new_leads,
                 'Ошибка номера': wrong_numbers,
                 '% переданных': round(transfer_rate, 1),
                 '% недозвонов': round(failed_rate, 1),
-                '% отказов': round(rejected_rate, 1),
-                '% дублей/повторов': round(duplicate_rate, 1),
+                '% отказов': round(refused_rate, 1),
+                '% дублей': round(duplicate_rate, 1),
+                '% перезвонов': round(recall_rate, 1),
+                '% новых': round(new_rate, 1),
                 'Лидов в день': round(leads_per_day, 1),
                 'Загруженность': load_status,
                 '📈 ПРОГНОЗ: % переданных': round(predicted_transfer, 1),
@@ -428,7 +353,6 @@ class PerformanceMatrixAgent:
         
         # Анализ лэндов
         landings_stats = []
-        
         if columns_map['ленд']:
             for landing in df[columns_map['ленд']].dropna().unique():
                 landing_df = df[df[columns_map['ленд']] == landing]
@@ -480,10 +404,67 @@ class PerformanceMatrixAgent:
         }
     
     def analyze_data(self, df: pd.DataFrame, selected_dispatchers: List[str] = None) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
-        if self.is_aggregated_data(df):
-            return self.analyze_aggregated_table(df)
+        data_type = self.detect_data_type(df)
+        if data_type == 'aggregated':
+            return self._analyze_aggregated(df)
         else:
             return self.analyze_dispatcher_from_raw(df, selected_dispatchers)
+    
+    def _analyze_aggregated(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
+        name_col = None
+        for col in df.columns:
+            if any(word in col.lower() for word in ['имя', 'фио', 'сотрудник', 'маркетолог', 'диспетчер']):
+                name_col = col
+                break
+        
+        if not name_col:
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {'error': 'Не найдена колонка с именами'}
+        
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        results = []
+        for _, row in df.iterrows():
+            name = str(row[name_col]).strip()
+            if not name or name == 'nan':
+                continue
+            
+            values = []
+            for col in numeric_cols[:10]:
+                if pd.notna(row[col]):
+                    values.append(float(row[col]))
+                else:
+                    values.append(0)
+            
+            while len(values) < 10:
+                values.append(0)
+            
+            total_leads, transferred, failed, refused, duplicates, recalls, wrong, new_leads = values[:8]
+            
+            transfer_rate = (transferred / total_leads * 100) if total_leads > 0 else 0
+            
+            if transfer_rate < self.targets['dispatcher']['transfer_rate']:
+                predicted_transfer = transfer_rate + (self.targets['dispatcher']['transfer_rate'] - transfer_rate) * 0.3
+            else:
+                predicted_transfer = transfer_rate * 0.97
+            
+            results.append({
+                'Сотрудник': name,
+                'Получено лидов': int(total_leads),
+                'Передано продажам': int(transferred),
+                'Недозвоны': int(failed),
+                'Отказы': int(refused),
+                'Дубли': int(duplicates),
+                'Перезвоны': int(recalls),
+                'Новые (необработанные)': int(new_leads),
+                'Ошибка номера': int(wrong),
+                '% переданных': round(transfer_rate, 1),
+                '📈 ПРОГНОЗ: % переданных': round(predicted_transfer, 1),
+                '📈 ПРОГНОЗ: передач (шт)': round(total_leads * predicted_transfer / 100, 0),
+                'is_problem': transfer_rate < 70
+            })
+        
+        summary_df = pd.DataFrame(results)
+        return summary_df, pd.DataFrame(), pd.DataFrame(), {'type': 'aggregated'}
     
     def generate_email_report(self, summary_df: pd.DataFrame, landings_df: pd.DataFrame, extra_info: Dict = None) -> Tuple[str, bool]:
         has_problems = False
@@ -507,7 +488,5 @@ class PerformanceMatrixAgent:
                     email_lines.append(f"  • {emp['Сотрудник']}:")
                     if emp['% переданных'] < 70:
                         email_lines.append(f"    - Низкий % переданных: {emp['% переданных']}%")
-                    if emp['% недозвонов'] > 15:
-                        email_lines.append(f"    - Много недозвонов: {emp['% недозвонов']}%")
         
         return "\n".join(email_lines), has_problems
