@@ -307,10 +307,10 @@ if st.session_state.combined_df is not None and st.session_state.current_departm
                 pred_total = summary_df['📈 ПРОГНОЗ: передач (шт)'].sum()
                 st.markdown(f'<div class="prediction-card"><h4>📈 ПРОГНОЗ (ML)</h4><h2>{pred:.1f}%</h2><p>средний % переданных</p><hr><p>📦 Прогноз: <b>{pred_total:.0f}</b></p></div>', unsafe_allow_html=True)
             with col3:
-                failed = summary_df['% недозвонов'].mean()
+                failed = summary_df['% недозвонов'].mean() if '% недозвонов' in summary_df.columns else 0
                 st.markdown(f'<div class="fact-card"><h4>📞 НЕДОЗВОНЫ</h4><h2>{failed:.1f}%</h2><p>средний % недозвонов</p><hr><p>🎯 Норма: до 15%</p></div>', unsafe_allow_html=True)
             with col4:
-                rejected = summary_df['% отказов'].mean()
+                rejected = summary_df['% отказов'].mean() if '% отказов' in summary_df.columns else 0
                 st.markdown(f'<div class="fact-card"><h4>❌ ОТКАЗЫ</h4><h2>{rejected:.1f}%</h2><p>средний % отказов</p><hr><p>🎯 Норма: до 10%</p></div>', unsafe_allow_html=True)
             
             # Анализ лэндов
@@ -327,7 +327,15 @@ if st.session_state.combined_df is not None and st.session_state.current_departm
             
             # Анализ по сотрудникам
             st.markdown('<div class="section-title">👥 Анализ по сотрудникам</div>', unsafe_allow_html=True)
-            display_cols = [c for c in summary_df.columns if c not in ['is_problem']]
+            
+            # Определяем колонки для отображения
+            display_cols = ['Сотрудник', 'Получено лидов', 'Передано продажам', 'Недозвоны', 'Отказы', 
+                           'Дубли', 'Перезвоны', 'Новые (необработанные)', '% переданных', 
+                           '% недозвонов', '% отказов', '📈 ПРОГНОЗ: % переданных', '📈 ПРОГНОЗ: передач (шт)']
+            
+            # Фильтруем только существующие колонки
+            display_cols = [col for col in display_cols if col in summary_df.columns]
+            
             st.dataframe(summary_df[display_cols], use_container_width=True)
             
             # Графики по сотрудникам
@@ -349,12 +357,12 @@ if st.session_state.combined_df is not None and st.session_state.current_departm
                 with col2:
                     metrics = []
                     values = []
-                    if emp['% недозвонов'] > 15:
+                    if '% недозвонов' in emp and emp['% недозвонов'] > 15:
                         metrics.append('Недозвоны'); values.append(emp['% недозвонов'])
-                    if emp['% отказов'] > 10:
+                    if '% отказов' in emp and emp['% отказов'] > 10:
                         metrics.append('Отказы'); values.append(emp['% отказов'])
-                    if emp.get('% дублей/повторов', 0) > 5:
-                        metrics.append('Дубли/Повторы'); values.append(emp['% дублей/повторов'])
+                    if '% дублей' in emp and emp['% дублей'] > 5:
+                        metrics.append('Дубли'); values.append(emp['% дублей'])
                     
                     if metrics:
                         fig2 = go.Figure()
@@ -450,12 +458,16 @@ if st.session_state.combined_df is not None and st.session_state.current_departm
                 data = [
                     ['% переданных', f"{summary_df['% переданных'].mean():.1f}%", 
                      f"{summary_df['📈 ПРОГНОЗ: % переданных'].mean():.1f}%", '70%',
-                     '✅ Норма' if summary_df['% переданных'].mean() >= 70 else '⚠️ Проблема'],
-                    ['% недозвонов', f"{summary_df['% недозвонов'].mean():.1f}%", '-', '≤15%',
-                     '✅ Норма' if summary_df['% недозвонов'].mean() <= 15 else '⚠️ Проблема'],
-                    ['% отказов', f"{summary_df['% отказов'].mean():.1f}%", '-', '≤10%',
-                     '✅ Норма' if summary_df['% отказов'].mean() <= 10 else '⚠️ Проблемa']
+                     '✅ Норма' if summary_df['% переданных'].mean() >= 70 else '⚠️ Проблема']
                 ]
+                
+                if '% недозвонов' in summary_df.columns:
+                    data.append(['% недозвонов', f"{summary_df['% недозвонов'].mean():.1f}%", '-', '≤15%',
+                                 '✅ Норма' if summary_df['% недозвонов'].mean() <= 15 else '⚠️ Проблема'])
+                
+                if '% отказов' in summary_df.columns:
+                    data.append(['% отказов', f"{summary_df['% отказов'].mean():.1f}%", '-', '≤10%',
+                                 '✅ Норма' if summary_df['% отказов'].mean() <= 10 else '⚠️ Проблема'])
                 
                 for d in data:
                     for c, v in enumerate(d, 1):
@@ -481,9 +493,9 @@ if st.session_state.combined_df is not None and st.session_state.current_departm
                         issues_list = []
                         if emp['% переданных'] < 70:
                             issues_list.append(f"низкая конверсия {emp['% переданных']}%")
-                        if emp['% недозвонов'] > 15:
+                        if '% недозвонов' in emp and emp['% недозвонов'] > 15:
                             issues_list.append(f"недозвоны {emp['% недозвонов']}%")
-                        if emp['% отказов'] > 10:
+                        if '% отказов' in emp and emp['% отказов'] > 10:
                             issues_list.append(f"отказы {emp['% отказов']}%")
                         
                         ws1[f'A{row}'] = f"• {emp['Сотрудник']}: {', '.join(issues_list)}"
@@ -511,7 +523,7 @@ if st.session_state.combined_df is not None and st.session_state.current_departm
                             max_len = max(max_len, len(str(val)))
                     ws2.column_dimensions[get_column_letter(c)].width = min(max_len + 2, 20)
                 
-                if len(summary_df) > 0:
+                if len(summary_df) > 0 and '% переданных' in cols_to_show:
                     chart = BarChart()
                     chart.title = "% переданных по сотрудникам"
                     chart.y_axis.title = "Процент"
