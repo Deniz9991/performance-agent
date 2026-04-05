@@ -124,6 +124,10 @@ if 'dispatcher_confirmed' not in st.session_state:
     st.session_state.dispatcher_confirmed = False
 if 'employees_list' not in st.session_state:
     st.session_state.employees_list = []
+if 'manual_input_df' not in st.session_state:
+    st.session_state.manual_input_df = None
+if 'data_source' not in st.session_state:
+    st.session_state.data_source = None  # 'manual' или 'file'
 
 st.markdown("""
 <div class="main-header">
@@ -158,14 +162,19 @@ with st.sidebar:
             submitted = st.form_submit_button("🚀 Рассчитать", use_container_width=True)
             if submitted and name:
                 df_input = pd.DataFrame({
-                    'имя': [name],
-                    'получено_лидов': [total_leads],
-                    'передано_продажам': [transferred],
-                    'недозвоны': [failed_calls],
-                    'забраковано': [rejected]
+                    'Сотрудник': [name],
+                    'Получено лидов': [total_leads],
+                    'Передано продажам': [transferred],
+                    'Недозвоны': [failed_calls],
+                    'Отказы': [rejected],
+                    'Дубли': [0],
+                    'Перезвоны': [0],
+                    'Новые (необработанные)': [0],
+                    'Ошибка номера': [0]
                 })
-                st.session_state.combined_df = df_input
-                st.session_state.current_department = "dispatcher"
+                st.session_state.manual_input_df = df_input
+                st.session_state.combined_df = None
+                st.session_state.data_source = 'manual'
                 st.session_state.dispatcher_confirmed = True
                 st.rerun()
     
@@ -179,11 +188,15 @@ with st.sidebar:
             add_button = st.form_submit_button("➕ Добавить", use_container_width=True)
             if add_button and name:
                 st.session_state.employees_list.append({
-                    'имя': name,
-                    'получено_лидов': total_leads,
-                    'передано_продажам': transferred,
-                    'недозвоны': failed_calls,
-                    'забраковано': rejected
+                    'Сотрудник': name,
+                    'Получено лидов': total_leads,
+                    'Передано продажам': transferred,
+                    'Недозвоны': failed_calls,
+                    'Отказы': rejected,
+                    'Дубли': 0,
+                    'Перезвоны': 0,
+                    'Новые (необработанные)': 0,
+                    'Ошибка номера': 0
                 })
                 st.success(f"✅ Добавлен: {name}")
                 st.rerun()
@@ -194,8 +207,9 @@ with st.sidebar:
             with col1:
                 if st.button("🚀 Рассчитать всех", use_container_width=True):
                     df_input = pd.DataFrame(st.session_state.employees_list)
-                    st.session_state.combined_df = df_input
-                    st.session_state.current_department = "dispatcher"
+                    st.session_state.manual_input_df = df_input
+                    st.session_state.combined_df = None
+                    st.session_state.data_source = 'manual'
                     st.session_state.dispatcher_confirmed = True
                     st.session_state.employees_list = []
                     st.rerun()
@@ -206,6 +220,7 @@ with st.sidebar:
     
     else:
         st.markdown("### 📁 Загрузка из CRM")
+        st.info("Загрузите файл(ы) с сырыми данными из CRM (каждая строка - один лид)")
         uploaded_files = st.file_uploader("Выберите файлы", type=["xlsx", "csv"], accept_multiple_files=True)
         
         if uploaded_files:
@@ -224,14 +239,139 @@ with st.sidebar:
                 if all_dfs:
                     df_input = pd.concat(all_dfs, ignore_index=True)
                     st.session_state.combined_df = df_input
-                    st.session_state.current_department = "dispatcher"
-                    st.session_state.dispatcher_confirmed = False
+                    st.session_state.manual_input_df = None
+                    st.session_state.data_source = 'file'
+                    st.session_state.dispatcher_confirmed = False  # Нужно подтверждение диспетчеров
                     st.success(f"✅ Загружено {len(uploaded_files)} файлов, {len(df_input)} строк")
+                    st.rerun()
 
-# Основная логика анализа
-if st.session_state.combined_df is not None and st.session_state.current_department == "dispatcher":
+# ============================================
+# ОСНОВНАЯ ЛОГИКА ОТОБРАЖЕНИЯ
+# ============================================
+
+# 1. РУЧНОЙ ВВОД ДАННЫХ
+if st.session_state.data_source == 'manual' and st.session_state.manual_input_df is not None:
+    summary_df = st.session_state.manual_input_df
+    daily_df = pd.DataFrame()
+    landings_df = pd.DataFrame()
+    extra_info = {}
+    unassigned_df = pd.DataFrame()
+    issues_df = pd.DataFrame()
+    
+    # Добавляем прогноз и проценты
+    for idx, row in summary_df.iterrows():
+        transfer_rate = (row['Передано продажам'] / row['Получено лидов'] * 100) if row['Получено лидов'] > 0 else 0
+        if transfer_rate < 70:
+            predicted_transfer = transfer_rate + (70 - transfer_rate) * 0.3
+        else:
+            predicted_transfer = transfer_rate * 0.97
+        
+        summary_df.at[idx, '% переданных'] = round(transfer_rate, 1)
+        summary_df.at[idx, '📈 ПРОГНОЗ: % переданных'] = round(predicted_transfer, 1)
+        summary_df.at[idx, '📈 ПРОГНОЗ: передач (шт)'] = round(row['Получено лидов'] * predicted_transfer / 100, 0)
+        summary_df.at[idx, 'is_problem'] = transfer_rate < 70
+        summary_df.at[idx, '% недозвонов'] = round(row['Недозвоны'] / row['Получено лидов'] * 100, 1) if row['Получено лидов'] > 0 else 0
+        summary_df.at[idx, '% отказов'] = round(row['Отказы'] / row['Получено лидов'] * 100, 1) if row['Получено лидов'] > 0 else 0
+    
+    # Сводка по отделу
+    st.markdown('<div class="section-title">📊 Сводка по отделу</div>', unsafe_allow_html=True)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        actual = summary_df['% переданных'].mean()
+        total = summary_df['Передано продажам'].sum()
+        st.markdown(f'<div class="fact-card"><h4>📊 ФАКТ</h4><h2>{actual:.1f}%</h2><p>средний % переданных</p><hr><p>📦 Передано: <b>{total:.0f}</b></p></div>', unsafe_allow_html=True)
+    with col2:
+        pred = summary_df['📈 ПРОГНОЗ: % переданных'].mean()
+        pred_total = summary_df['📈 ПРОГНОЗ: передач (шт)'].sum()
+        st.markdown(f'<div class="prediction-card"><h4>📈 ПРОГНОЗ (ML)</h4><h2>{pred:.1f}%</h2><p>средний % переданных</p><hr><p>📦 Прогноз: <b>{pred_total:.0f}</b></p></div>', unsafe_allow_html=True)
+    with col3:
+        failed = summary_df['% недозвонов'].mean()
+        st.markdown(f'<div class="fact-card"><h4>📞 НЕДОЗВОНЫ</h4><h2>{failed:.1f}%</h2><p>средний % недозвонов</p><hr><p>🎯 Норма: до 15%</p></div>', unsafe_allow_html=True)
+    with col4:
+        rejected = summary_df['% отказов'].mean()
+        st.markdown(f'<div class="fact-card"><h4>❌ ОТКАЗЫ</h4><h2>{rejected:.1f}%</h2><p>средний % отказов</p><hr><p>🎯 Норма: до 10%</p></div>', unsafe_allow_html=True)
+    
+    # Анализ по сотрудникам
+    st.markdown('<div class="section-title">👥 Анализ по сотрудникам</div>', unsafe_allow_html=True)
+    
+    display_cols = ['Сотрудник', 'Получено лидов', 'Передано продажам', 'Недозвоны', 'Отказы', 
+                   '% переданных', '% недозвонов', '% отказов', 
+                   '📈 ПРОГНОЗ: % переданных', '📈 ПРОГНОЗ: передач (шт)']
+    
+    st.dataframe(summary_df[display_cols], use_container_width=True)
+    
+    # Графики по сотрудникам
+    st.markdown('<div class="section-title">📈 Графики по сотрудникам</div>', unsafe_allow_html=True)
+    
+    for idx, emp in summary_df.iterrows():
+        name = emp['Сотрудник']
+        st.markdown(f'<div class="employee-card"><h3>👤 {name}</h3>', unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=['Текущий', 'Прогноз'], y=[emp['% переданных'], emp['📈 ПРОГНОЗ: % переданных']],
+                                 marker_color=['#667eea', '#f5576c'], text=[f"{emp['% переданных']:.1f}%", f"{emp['📈 ПРОГНОЗ: % переданных']:.1f}%"], textposition='outside'))
+            fig.add_hline(y=70, line_dash="dash", line_color="#27ae60", annotation_text="Норма 70%")
+            fig.update_layout(title="% переданных: факт vs прогноз", height=350, plot_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig, use_container_width=True, key=f"bar_chart_{idx}")
+        
+        with col2:
+            metrics = []
+            values = []
+            if emp['% недозвонов'] > 15:
+                metrics.append('Недозвоны'); values.append(emp['% недозвонов'])
+            if emp['% отказов'] > 10:
+                metrics.append('Отказы'); values.append(emp['% отказов'])
+            
+            if metrics:
+                fig2 = go.Figure()
+                fig2.add_trace(go.Bar(x=metrics, y=values, marker_color='#e74c3c', text=values, textposition='outside'))
+                fig2.update_layout(title="⚠️ Показатели выше нормы", height=350, plot_bgcolor='rgba(0,0,0,0)')
+                st.plotly_chart(fig2, use_container_width=True, key=f"warning_chart_{idx}")
+            else:
+                st.markdown('<div style="background:#27ae60; color:white; padding:1rem; border-radius:1rem; text-align:center; height:350px; display:flex; align-items:center; justify-content:center;"><div><h2>✅</h2><p>Все показатели в норме!</p></div></div>', unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Экспорт в Excel
+    st.markdown("---")
+    
+    def export_manual_to_excel(summary_df):
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            summary_df.to_excel(writer, sheet_name='Сводка_по_сотрудникам', index=False)
+        return output
+    
+    excel_file = export_manual_to_excel(summary_df)
+    st.download_button(
+        label="📥 Скачать Excel отчет",
+        data=excel_file,
+        file_name=f"manual_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    
+    # Кнопка сброса
+    st.markdown("---")
+    if st.button("🔄 Начать заново", use_container_width=True):
+        for key in ['manual_input_df', 'combined_df', 'data_source', 'employees_list', 'dispatcher_confirmed', 'selected_dispatchers']:
+            if key in st.session_state:
+                if key == 'dispatcher_confirmed':
+                    st.session_state[key] = False
+                elif key == 'selected_dispatchers':
+                    st.session_state[key] = []
+                elif key == 'employees_list':
+                    st.session_state[key] = []
+                else:
+                    st.session_state[key] = None
+        st.rerun()
+
+# 2. ЗАГРУЗКА ФАЙЛОВ (СЫРЫЕ ДАННЫЕ ИЗ CRM)
+elif st.session_state.data_source == 'file' and st.session_state.combined_df is not None:
     df = st.session_state.combined_df
     
+    # Подтверждение диспетчеров
     if not st.session_state.dispatcher_confirmed:
         columns_map = agent.detect_columns(df)
         if columns_map['маркетолог']:
@@ -328,14 +468,11 @@ if st.session_state.combined_df is not None and st.session_state.current_departm
             # Анализ по сотрудникам
             st.markdown('<div class="section-title">👥 Анализ по сотрудникам</div>', unsafe_allow_html=True)
             
-            # Определяем колонки для отображения
             display_cols = ['Сотрудник', 'Получено лидов', 'Передано продажам', 'Недозвоны', 'Отказы', 
                            'Дубли', 'Перезвоны', 'Новые (необработанные)', '% переданных', 
                            '% недозвонов', '% отказов', '📈 ПРОГНОЗ: % переданных', '📈 ПРОГНОЗ: передач (шт)']
             
-            # Фильтруем только существующие колонки
             display_cols = [col for col in display_cols if col in summary_df.columns]
-            
             st.dataframe(summary_df[display_cols], use_container_width=True)
             
             # Графики по сотрудникам
@@ -637,11 +774,21 @@ if st.session_state.combined_df is not None and st.session_state.current_departm
             
             st.markdown("---")
             if st.button("🔄 Начать заново", use_container_width=True):
-                st.session_state.combined_df = None
-                st.session_state.dispatcher_confirmed = False
-                st.session_state.selected_dispatchers = []
-                st.session_state.employees_list = []
+                for key in ['manual_input_df', 'combined_df', 'data_source', 'employees_list', 'dispatcher_confirmed', 'selected_dispatchers']:
+                    if key in st.session_state:
+                        if key == 'dispatcher_confirmed':
+                            st.session_state[key] = False
+                        elif key == 'selected_dispatchers':
+                            st.session_state[key] = []
+                        elif key == 'employees_list':
+                            st.session_state[key] = []
+                        else:
+                            st.session_state[key] = None
                 st.rerun()
+
+# Если нет данных
+else:
+    st.info("👈 Выберите способ ввода данных в боковой панели и загрузите данные")
 
 st.markdown(f"""
 <div class="footer">
